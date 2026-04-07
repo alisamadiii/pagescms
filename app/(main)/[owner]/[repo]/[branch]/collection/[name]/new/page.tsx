@@ -23,6 +23,9 @@ export default function Page({
   if (!config) throw new Error("Configuration not found.");
   const searchParams = useSearchParams();
   const parent = searchParams.get("parent") || undefined;
+  const locale = searchParams.get("locale") || undefined;
+  const source = searchParams.get("source") || undefined;
+  const target = searchParams.get("target") || undefined;
   const schemaName = decodeURIComponent(resolvedParams.name);
   const schema = getSchemaByName(config.object, schemaName);
   const displayName = schema?.label || schema?.name || schemaName;
@@ -32,7 +35,14 @@ export default function Page({
       <DocumentTitle
         title={formatRepoBranchTitle(`New entry | ${displayName}`, config.owner, config.repo, config.branch)}
       />
-      <Entry name={schemaName} title="New entry" parent={parent}/>
+      <Entry
+        name={schemaName}
+        title="New entry"
+        parent={parent}
+        sourcePath={source}
+        targetPath={target}
+        targetLocale={locale}
+      />
     </>
   );
 }

@@ -71,7 +71,7 @@ export function CollectionTable<TData extends TableData>({
   search,
   setSearch,
   onExpand,
-  pathname,
+  getFolderHref,
   path,
   isTree = false,
   primaryField
@@ -82,7 +82,7 @@ export function CollectionTable<TData extends TableData>({
   search: string,
   setSearch: (value: string) => void,
   onExpand: (row: any) => Promise<any>,
-  pathname: string,
+  getFolderHref: (path: string) => string,
   path: string,
   isTree?: boolean,
   primaryField?: string
@@ -258,7 +258,7 @@ export function CollectionTable<TData extends TableData>({
                             </button>
                           : <Link
                               className="flex items-center gap-x-2 font-medium"
-                              href={`${pathname}?path=${encodeURIComponent(row.original.path)}`}
+                              href={getFolderHref(row.original.path)}
                             >
                               <Folder className="h-4 w-4" />
                               {row.original.name}

@@ -4,6 +4,7 @@ import { readFns } from "@/fields/registry";
 import { deepMap, getSchemaByName } from "@/lib/schema";
 import { parse } from "@/lib/serialization";
 import { getConfig } from "@/lib/config-store";
+import { inferLocalizedFileInfo, isPathAllowedForSchema } from "@/lib/localization";
 import { getFileExtension, normalizePath } from "@/lib/utils/file";
 import { assertGithubIdentity } from "@/lib/authz-shared";
 import { getToken } from "@/lib/token";
@@ -64,6 +65,7 @@ export async function GET(
 
     let config;
     let schema;
+    let octokit;
 
     if (name) {
       config = await getConfig(params.owner, params.repo, params.branch, {
@@ -74,7 +76,9 @@ export async function GET(
       schema = getSchemaByName(config.object, name);
       if (!schema) throw createHttpError(`Schema not found for ${name}.`, 404);
 
-      if (!normalizedPath.startsWith(schema.path)) throw createHttpError(`Invalid path "${params.path}" for ${schema.type} "${name}".`, 400);
+      if (!isPathAllowedForSchema(normalizedPath, schema, config.object?.localization)) {
+        throw createHttpError(`Invalid path "${params.path}" for ${schema.type} "${name}".`, 400);
+      }
 
       const extension = schema.extension ?? "";
       if (getFileExtension(normalizedPath) !== extension) {
@@ -83,8 +87,8 @@ export async function GET(
     } else {
       config = {};
     }
-    
-    const octokit = createOctokitInstance(token);
+
+    octokit = createOctokitInstance(token);
     let response;
     try {
       response = await octokit.rest.repos.getContent({
@@ -106,6 +110,40 @@ export async function GET(
       throw createHttpError("Invalid response type", 500);
     }
 
+    const localized = name
+      ? inferLocalizedFileInfo(response.data.path, schema, config.object?.localization)
+      : null;
+    const localizationState = localized
+      ? await resolveSiblingLocaleState({
+        branch: params.branch,
+        currentPath: response.data.path,
+        octokit,
+        owner: params.owner,
+        repo: params.repo,
+        siblings: localized.siblings,
+      })
+      : null;
+
+    if (metaOnly) {
+      return Response.json({
+        status: "success",
+        data: {
+          sha: response.data.sha,
+          name: response.data.name,
+          path: response.data.path,
+          localization: localized
+            ? {
+              locale: localized.locale,
+              basePath: localized.basePath,
+              siblings: localized.siblings,
+              availableLocales: localizationState?.availableLocales ?? [],
+              missingLocales: localizationState?.missingLocales ?? [],
+            }
+            : undefined,
+        },
+      });
+    }
+
     const content = Buffer.from(response.data.content, "base64").toString();
     const contentObject = name
       ? parseContent(content, schema, config)
@@ -117,7 +155,16 @@ export async function GET(
         sha: response.data.sha,
         name: response.data.name,
         path: response.data.path,
-        contentObject
+        contentObject,
+        localization: localized
+          ? {
+            locale: localized.locale,
+            basePath: localized.basePath,
+            siblings: localized.siblings,
+            availableLocales: localizationState?.availableLocales ?? [],
+            missingLocales: localizationState?.missingLocales ?? [],
+          }
+          : undefined,
       }
     });
   } catch (error: any) {
@@ -174,4 +221,47 @@ const parseContent = (
   }
   
   return contentObject; 
+};
+
+const resolveSiblingLocaleState = async ({
+  branch,
+  currentPath,
+  octokit,
+  owner,
+  repo,
+  siblings,
+}: {
+  branch: string;
+  currentPath: string;
+  octokit: ReturnType<typeof createOctokitInstance>;
+  owner: string;
+  repo: string;
+  siblings: Record<string, string>;
+}) => {
+  const entries = await Promise.all(
+    Object.entries(siblings).map(async ([locale, siblingPath]) => {
+      if (normalizePath(siblingPath) === normalizePath(currentPath)) {
+        return [locale, true] as const;
+      }
+
+      try {
+        const response = await octokit.rest.repos.getContent({
+          owner,
+          repo,
+          path: normalizePath(siblingPath),
+          ref: branch,
+        });
+        return [locale, !Array.isArray(response.data) && response.data.type === "file"] as const;
+      } catch (error: any) {
+        if (error?.status === 404) return [locale, false] as const;
+        throw error;
+      }
+    }),
+  );
+
+  const availability = Object.fromEntries(entries);
+  return {
+    availableLocales: Object.keys(availability).filter((locale) => availability[locale]),
+    missingLocales: Object.keys(availability).filter((locale) => !availability[locale]),
+  };
 };

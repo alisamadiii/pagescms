@@ -3,6 +3,7 @@ import { createOctokitInstance } from "@/lib/utils/octokit";
 import { isContentOperationAllowed } from "@/lib/operations";
 import { writeFns } from "@/fields/registry";
 import { configVersion, parseConfig, normalizeConfig } from "@/lib/config";
+import { inferLocalizedFileInfo, isPathAllowedForSchema } from "@/lib/localization";
 import { stringify, parse } from "@/lib/serialization";
 import { deepMap, generateZodSchema, getSchemaByName, sanitizeObject } from "@/lib/schema";
 import { getConfig, updateConfig } from "@/lib/config-store";
@@ -64,7 +65,9 @@ export async function POST(
         schemaCommitTemplates = schema?.commit?.templates;
         schemaCommitIdentity = schema?.commit?.identity;
 
-        if (!normalizedPath.startsWith(schema.path)) throw new Error(`Invalid path "${params.path}" for ${data.type} "${data.name}".`);
+        if (!isPathAllowedForSchema(normalizedPath, schema, config?.object?.localization)) {
+          throw new Error(`Invalid path "${params.path}" for ${data.type} "${data.name}".`);
+        }
 
         if (schema.subfolders === false && getParentPath(normalizedPath) !== schema.path) {
           throw new Error(`Subfolders are not allowed for collection "${data.name}".`);
@@ -75,6 +78,12 @@ export async function POST(
           contentBase64 = "";
         } else {
           if (getFileExtension(normalizedPath) !== (schema.extension ?? "")) throw new Error(`Invalid extension "${getFileExtension(normalizedPath)}" for ${data.type} "${data.name}".`);
+          if (typeof data.locale === "string" && data.locale.length > 0) {
+            const localized = inferLocalizedFileInfo(normalizedPath, schema, config?.object?.localization);
+            if (localized && localized.locale !== data.locale) {
+              throw new Error(`Invalid locale "${data.locale}" for path "${params.path}".`);
+            }
+          }
 
           if (serializedTypes.includes(schema.format) && schema.fields) {
             let contentFields;

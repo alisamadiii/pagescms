@@ -5,6 +5,13 @@ import { readFns } from "@/fields/registry";
 import { parse } from "@/lib/serialization";
 import { deepMap, getDateFromFilename, getFieldByPath, getSchemaByName, safeAccess } from "@/lib/schema";
 import { getRepoReadContext } from "@/lib/api-repo-context";
+import {
+  getLocalizedRootPath,
+  inferLocalizedFileInfo,
+  isLocalizedFilesSchema,
+  isPathAllowedForSchema,
+  isPathWithinLocalizedRoot,
+} from "@/lib/localization";
 import { normalizePath } from "@/lib/utils/file";
 import { getCollectionCache } from "@/lib/github-cache-file";
 import { createHttpError, toErrorResponse } from "@/lib/api-error";
@@ -35,15 +42,36 @@ export async function GET(
     const type = searchParams.get("type");
     const query = searchParams.get("query") || "";
     const fields = searchParams.get("fields")?.split(",") || ["name"];
+    const locale = searchParams.get("locale") || undefined;
 
     const normalizedPath = normalizePath(path);
-    if (!normalizedPath.startsWith(schema.path)) throw createHttpError(`Invalid path "${path}" for collection "${params.name}".`, 400);
+    const localizedRootPath = getLocalizedRootPath(
+      schema,
+      locale,
+      config.object?.localization,
+    );
+    const effectivePath = normalizedPath || localizedRootPath || normalizePath(schema.path);
 
-    if (schema.subfolders === false) {
-      if (normalizedPath !== schema.path) throw createHttpError(`Invalid path "${path}" for collection "${params.name}".`, 400);
+    if (
+      locale &&
+      isLocalizedFilesSchema(schema) &&
+      !isPathWithinLocalizedRoot(effectivePath, locale, schema, config.object?.localization)
+    ) {
+      throw createHttpError(`Invalid path "${path}" for collection "${params.name}".`, 400);
     }
 
-    let entries = await getCollectionCache(params.owner, params.repo, params.branch, normalizedPath, token, schema.view?.node?.filename);
+    if (!isPathAllowedForSchema(effectivePath, schema, config.object?.localization)) {
+      throw createHttpError(`Invalid path "${path}" for collection "${params.name}".`, 400);
+    }
+
+    if (schema.subfolders === false) {
+      const expectedRoot = localizedRootPath || schema.path;
+      if (effectivePath !== expectedRoot) {
+        throw createHttpError(`Invalid path "${path}" for collection "${params.name}".`, 400);
+      }
+    }
+
+    let entries = await getCollectionCache(params.owner, params.repo, params.branch, effectivePath, token, schema.view?.node?.filename);
     
     let data: {
       contents: Record<string, any>[],
@@ -184,7 +212,8 @@ const parseContents = (
         }
       }
       
-      // TODO: handle proper returns
+      const localized = inferLocalizedFileInfo(item.path, schema, config.object?.localization);
+
       return {
         sha: item.sha,
         name: item.name,
@@ -194,6 +223,13 @@ const parseContents = (
         fields: contentObject,
         type: "file",
         isNode: item.isNode,
+        localization: localized
+          ? {
+            locale: localized.locale,
+            basePath: localized.basePath,
+            siblings: localized.siblings,
+          }
+          : undefined,
       };
     } else if (item.type === "dir" && !excludedFiles.includes(item.name) && schema.subfolders !== false) {
       return {

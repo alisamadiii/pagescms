@@ -32,6 +32,13 @@ export type EntryData = {
   path: string;
   name?: string;
   contentObject?: Record<string, unknown>;
+  localization?: {
+    locale: string;
+    basePath: string;
+    siblings: Record<string, string>;
+    availableLocales?: string[];
+    missingLocales?: string[];
+  };
 };
 
 export type FileSaveData = {

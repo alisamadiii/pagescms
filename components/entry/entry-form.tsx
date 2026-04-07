@@ -480,7 +480,6 @@ const ListField = ({
               )}
               {hasExplicitReadonly(field) && (
                 <Badge variant="secondary" className="text-muted-foreground">
-                  <Ban className="-ml-0.5" />
                   Readonly
                 </Badge>
               )}
@@ -928,7 +927,6 @@ const SingleField = ({
             )}
             {hasExplicitReadonly(field) && (
               <Badge variant="secondary" className="text-muted-foreground">
-                <Ban className="-ml-0.5" />
                 Readonly
               </Badge>
             )}
@@ -987,7 +985,6 @@ const SingleField = ({
                       variant="secondary"
                       className="text-muted-foreground"
                     >
-                      <Ban className="-ml-0.5" />
                       Readonly
                     </Badge>
                   )}
@@ -1032,6 +1029,7 @@ const EntryForm = ({
   contentObject,
   onSubmit = () => {},
   filePath,
+  systemFields,
   onDirtyChange,
   onChangeRegistered,
 }: {
@@ -1039,6 +1037,7 @@ const EntryForm = ({
   contentObject?: Record<string, unknown>;
   onSubmit: (values: Record<string, unknown>) => void;
   filePath?: React.ReactNode;
+  systemFields?: Array<{ label: string; node: React.ReactNode; readonly?: boolean }>;
   onDirtyChange?: (isDirty: boolean) => void;
   onChangeRegistered?: () => void;
 }) => {
@@ -1165,6 +1164,19 @@ const EntryForm = ({
         onSubmit={handleFormSubmit}
         className="w-full max-w-screen-md mx-auto grid items-start gap-6"
       >
+        {systemFields?.map((field) => (
+          <div className="space-y-2" key={field.label}>
+            <div className="flex items-center h-5 gap-x-2">
+              <FormLabel>{field.label}</FormLabel>
+              {field.readonly && (
+                <Badge variant="secondary" className="text-muted-foreground">
+                  Readonly
+                </Badge>
+              )}
+            </div>
+            {field.node}
+          </div>
+        ))}
         {filePath && (
           <div className="space-y-2 overflow-hidden">
             <FormLabel>Filename</FormLabel>

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useConfig } from "@/contexts/config-context";
 import { parseAndValidateConfig } from "@/lib/config";
+import { getDefaultLocale, getLocaleCodes, getLocaleOptions, isLocalizedFilesSchema } from "@/lib/localization";
 import { resolveContentOperations } from "@/lib/operations";
 import { requireApiSuccess } from "@/lib/api-client";
 import { getSchemaActions } from "@/lib/actions";
@@ -29,8 +30,11 @@ import { EntryHistoryDropdown } from "./entry-history";
 import { EmptyCreate } from "@/components/empty-create";
 import { FileOptions } from "@/components/file/file-options";
 import { RepoActionButtons } from "@/components/repo/repo-action-buttons";
+import { TranslationMenu } from "@/components/localization/translation-menu";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
+import { Input } from "@/components/ui/input";
 import {
   InputGroup,
   InputGroupAddon,
@@ -83,6 +87,9 @@ export function Entry({
   name = "",
   path: initialPath,
   parent,
+  sourcePath,
+  targetPath,
+  targetLocale,
   title,
   headerMeta,
   onSave,
@@ -90,6 +97,9 @@ export function Entry({
   name?: string;
   path?: string;
   parent?: string;
+  sourcePath?: string;
+  targetPath?: string;
+  targetLocale?: string;
   title?: string;
   headerMeta?: ReactNode;
   onSave?: (data: Record<string, unknown>) => void;
@@ -185,10 +195,47 @@ export function Entry({
       ? schema?.list === true
         ? { listWrapper: entry?.contentObject }
         : entry?.contentObject
+      : sourcePath
+        ? schema?.list === true
+          ? { listWrapper: entry?.contentObject }
+          : entry?.contentObject
       : schema?.list === true
         ? { listWrapper: [] }
         : {};
-  }, [schema, entry, path]);
+  }, [schema, entry, path, sourcePath]);
+
+  const effectiveLocaleCodes = useMemo(
+    () => isLocalizedFilesSchema(schema)
+      ? getLocaleCodes(schema?.localization, config.object?.localization)
+      : [],
+    [config.object, schema],
+  );
+  const localeOptions = useMemo(
+    () => isLocalizedFilesSchema(schema)
+      ? getLocaleOptions(schema?.localization, config.object?.localization)
+      : [],
+    [config.object, schema],
+  );
+  const defaultLocale = useMemo(
+    () => isLocalizedFilesSchema(schema)
+      ? getDefaultLocale(schema?.localization, config.object?.localization)
+      : undefined,
+    [config.object, schema],
+  );
+  const currentLocale = useMemo(
+    () => path
+      ? entry?.localization?.locale
+      : targetLocale || defaultLocale,
+    [defaultLocale, entry?.localization?.locale, path, targetLocale],
+  );
+  const effectiveLocale = currentLocale;
+  const effectiveTargetPath = useMemo(() => {
+    if (path) return undefined;
+    if (entry?.localization?.siblings && effectiveLocale) {
+      return entry.localization.siblings[effectiveLocale];
+    }
+    return targetPath;
+  }, [effectiveLocale, entry?.localization?.siblings, path, targetPath]);
 
   useEffect(() => {
     if (!showFilenameField || schemaType !== "collection" || !schema) return;
@@ -199,10 +246,16 @@ export function Entry({
       return;
     }
 
+    if (effectiveTargetPath) {
+      setFilenameValue(getFileName(normalizePath(effectiveTargetPath)));
+      setIsFilenameUnlocked(true);
+      return;
+    }
+
     const generated = generateFilename(schema.filename, schema, entryContentObject as Record<string, unknown>);
     setFilenameValue(generated || "untitled");
     setIsFilenameUnlocked(true);
-  }, [entryContentObject, path, schema, schemaType, showFilenameField]);
+  }, [effectiveTargetPath, entryContentObject, path, schema, schemaType, showFilenameField]);
 
   const entryApiUrl = useMemo(() => (
     path
@@ -234,10 +287,35 @@ export function Entry({
     },
   );
 
+  const sourceEntryApiUrl = useMemo(() => (
+    !path && sourcePath
+      ? `/api/${config.owner}/${config.repo}/${encodeURIComponent(config.branch)}/entries/${encodeURIComponent(sourcePath)}?name=${encodeURIComponent(name)}`
+      : null
+  ), [config.branch, config.owner, config.repo, name, path, sourcePath]);
+
+  const {
+    data: swrSourceEntryData,
+    error: swrSourceEntryError,
+    isLoading: swrSourceEntryLoading,
+  } = useSWR<EntryData>(
+    sourceEntryApiUrl,
+    fetchEntryByUrl,
+    {
+      revalidateOnFocus: true,
+      revalidateOnReconnect: true,
+      dedupingInterval: 2000,
+    },
+  );
+
   useEffect(() => {
     if (!path) return;
     setIsLoading(swrEntryLoading);
   }, [path, swrEntryLoading]);
+
+  useEffect(() => {
+    if (path || !sourcePath) return;
+    setIsLoading(swrSourceEntryLoading);
+  }, [path, sourcePath, swrSourceEntryLoading]);
 
   useEffect(() => {
     if (!swrEntryData || !path) return;
@@ -265,11 +343,31 @@ export function Entry({
   }, [initialPath, path, schema, swrEntryData, title]);
 
   useEffect(() => {
+    if (path || !swrSourceEntryData) return;
+    setEntry({
+      ...swrSourceEntryData,
+      sha: "",
+      path: targetPath || "",
+    });
+    setSha(undefined);
+    setHasRegisteredChanges(false);
+    setIsLoading(false);
+    setError(null);
+  }, [path, swrSourceEntryData, targetPath]);
+
+  useEffect(() => {
     if (!swrEntryError) return;
     const message = swrEntryError instanceof Error ? swrEntryError.message : "Failed to fetch entry.";
     setError(message);
     setIsLoading(false);
   }, [swrEntryError]);
+
+  useEffect(() => {
+    if (path || !swrSourceEntryError) return;
+    const message = swrSourceEntryError instanceof Error ? swrSourceEntryError.message : "Failed to fetch entry.";
+    setError(message);
+    setIsLoading(false);
+  }, [path, swrSourceEntryError]);
 
   const historyApiUrl = useMemo(() => (
     path
@@ -308,7 +406,6 @@ export function Entry({
   const filenameChanged = showFilenameField
     && filenameValue.trim().length > 0
     && filenameValue.trim() !== currentFilename;
-
   const onSubmit = async (contentObject: Record<string, unknown>) => {
     setIsSaving(true);
     const submitStartChangeVersion = changeVersionRef.current;
@@ -326,12 +423,21 @@ export function Entry({
         if (!savePath) {
           if (!schema) throw new Error("Cannot create entry without schema.");
           if (!canCreate) throw new Error("Creating entries in this content item isn't allowed.");
-          const basePath = parent ?? schema.path;
-          if (basePath == null) throw new Error("Cannot create entry without a target path.");
-          const generatedFilename = showFilenameField
-            ? normalizedFilename
-            : generateFilename(schema.filename, schema, contentObject);
-          savePath = joinPathSegments([basePath, generatedFilename]);
+          if (effectiveTargetPath) {
+            savePath = showFilenameField
+              ? joinPathSegments([
+                getParentPath(normalizePath(effectiveTargetPath)),
+                normalizedFilename,
+              ])
+              : normalizePath(effectiveTargetPath);
+          } else {
+            const basePath = parent ?? schema.path;
+            if (basePath == null) throw new Error("Cannot create entry without a target path.");
+            const generatedFilename = showFilenameField
+              ? normalizedFilename
+              : generateFilename(schema.filename, schema, contentObject);
+            savePath = joinPathSegments([basePath, generatedFilename]);
+          }
         } else if (filenameChanged && !canRename && schemaType === "collection") {
           throw new Error("Renaming this entry isn't allowed.");
         } else if (
@@ -370,6 +476,7 @@ export function Entry({
           body: JSON.stringify({
             type: path === ".pages.yml" ? "settings" : "content",
             name,
+            locale: effectiveLocale,
             content: schema?.list === true
               ? contentObject.listWrapper
               : contentObject,
@@ -653,7 +760,6 @@ export function Entry({
 
     return null;
   }, [config.branch, config.owner, config.repo, entry, path, schema, schemaType, sha]);
-
   const headerNode = useMemo(() => (
     <div className="flex min-w-0 items-center gap-2">
       <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
@@ -731,6 +837,53 @@ export function Entry({
       )}
     </div>
   ), [breadcrumbNode, canDelete, canRename, filenameChanged, filenameFieldMode, filenameValue, handleDelete, handleRename, hasRegisteredChanges, headerActionsNode, headerMeta, historyData, isBusy, isFilenameUnlocked, isFormDirty, isLoading, name, path, schemaType, sha, showFilenameField, showHeaderActions]);
+
+  const localeSystemField = useMemo(() => {
+    if (effectiveLocaleCodes.length === 0 || !effectiveLocale) return null;
+
+    const localeInput = (
+      <Input
+        readOnly
+        value={localeOptions.find((locale) => locale.code === effectiveLocale)?.label ?? effectiveLocale}
+      />
+    );
+
+    if (path || sourcePath) {
+      return {
+        label: "Locale",
+        readonly: true,
+        node: (
+          <div className="flex items-center gap-2">
+            {localeInput}
+            {entry?.localization?.siblings && (
+              <TranslationMenu
+                branch={config.branch}
+                contextType={schemaType === "file" ? "file" : "collection"}
+                currentLocale={effectiveLocale}
+                existingLocales={entry.localization.availableLocales || []}
+                localeOptions={localeOptions}
+                missingLocales={entry.localization.missingLocales || []}
+                name={name}
+                owner={config.owner}
+                path={path || sourcePath || ""}
+                repo={config.repo}
+                siblings={entry.localization.siblings}
+                size="default"
+              />
+            )}
+          </div>
+        ),
+      };
+    }
+
+    return {
+      label: "Locale",
+      readonly: true,
+      node: (
+        localeInput
+      ),
+    };
+  }, [config.branch, config.owner, config.repo, effectiveLocale, effectiveLocaleCodes.length, entry?.localization, localeOptions, name, path, schemaType, sourcePath]);
 
   useRepoHeader({ header: headerNode });
 
@@ -844,6 +997,7 @@ export function Entry({
         fields={entryFields}
         contentObject={entryContentObject}
         onSubmit={onSubmit}
+        systemFields={[localeSystemField].filter(Boolean) as Array<{ label: string; node: React.ReactNode; readonly?: boolean }>}
         filePath={
           showFilenameField
             ? <InputGroup data-disabled={path ? !isFilenameUnlocked : false}>

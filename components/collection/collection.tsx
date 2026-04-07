@@ -12,6 +12,15 @@ import {
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useConfig } from "@/contexts/config-context";
+import {
+  getDefaultLocale,
+  getLocaleCodes,
+  getLocaleOptions,
+  getLocalizedRootPath,
+  isLocalizedFilesSchema,
+  isPathWithinLocalizedRoot,
+  resolveLocalizedSiblingPath,
+} from "@/lib/localization";
 import { RepoActionButtons } from "@/components/repo/repo-action-buttons";
 import {
   getParentPath,
@@ -34,9 +43,11 @@ import { EmptyCreate } from "@/components/empty-create";
 import { FileOptions } from "@/components/file/file-options";
 import { CollectionTable } from "./collection-table";
 import { FolderCreate } from "@/components/folder-create";
+import { TranslationMenu } from "@/components/localization/translation-menu";
 import { resolveContentOperations } from "@/lib/operations";
 import { useRepoHeader } from "@/components/repo/repo-header-context";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { ButtonGroup } from "@/components/ui/button-group";
 import {
   Empty,
@@ -66,6 +77,15 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectSeparator,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -74,9 +94,10 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { EllipsisVertical, FolderPlus, Plus, Search } from "lucide-react";
+import { EllipsisVertical, FolderPlus, Languages, Plus, Search } from "lucide-react";
 import {
   Tooltip,
   TooltipContent,
@@ -88,26 +109,116 @@ type GroupTrailItem = {
   label?: string | null;
 };
 
+const CollectionRowTranslationMenu = memo(function CollectionRowTranslationMenu({
+  branch,
+  currentLocale,
+  localeOptions,
+  name,
+  owner,
+  path,
+  repo,
+  siblings,
+}: {
+  branch: string;
+  currentLocale: string;
+  localeOptions: Array<{ code: string; label: string }>;
+  name: string;
+  owner: string;
+  path: string;
+  repo: string;
+  siblings: Record<string, string>;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [existingLocales, setExistingLocales] = useState<string[] | undefined>(undefined);
+  const [missingLocales, setMissingLocales] = useState<string[] | undefined>(undefined);
+
+  useEffect(() => {
+    if (!isOpen || isLoading || existingLocales || missingLocales) return;
+
+    let cancelled = false;
+
+    const load = async () => {
+      setIsLoading(true);
+      try {
+        const response = await fetch(
+          `/api/${owner}/${repo}/${encodeURIComponent(branch)}/entries/${encodeURIComponent(path)}?name=${encodeURIComponent(name)}&meta=1`,
+        );
+        const result = await requireApiSuccess<any>(response, "Failed to fetch translation state");
+        if (cancelled) return;
+        setExistingLocales(result.data.localization?.availableLocales || []);
+        setMissingLocales(result.data.localization?.missingLocales || []);
+      } catch (error: any) {
+        if (!cancelled) {
+          toast.error(error?.message || "Failed to fetch translation state");
+        }
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    };
+
+    void load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [branch, existingLocales, isLoading, isOpen, missingLocales, name, owner, path, repo]);
+
+  return (
+    <TranslationMenu
+      branch={branch}
+      contextType="collection"
+      currentLocale={currentLocale}
+      existingLocales={existingLocales}
+      iconOnly
+      loading={isLoading || !existingLocales || !missingLocales}
+      localeOptions={localeOptions}
+      missingLocales={missingLocales}
+      name={name}
+      onOpenChange={setIsOpen}
+      owner={owner}
+      path={path}
+      repo={repo}
+      siblings={siblings}
+      size="sm"
+      variant="outline"
+    />
+  );
+});
+
 const CollectionHeaderActions = memo(function CollectionHeaderActions({
   addEntryHref,
   actionNode,
   collectionPath,
+  localeCodes,
+  localeOptions,
   name,
+  onLocaleChange,
   showAddEntry,
   showFolderCreate,
   onFolderCreate,
   onSearchChange,
+  selectedLocale,
+  showAllLocales,
 }: {
   addEntryHref: string;
   actionNode?: ReactNode;
   collectionPath: string;
+  localeCodes: string[];
+  localeOptions: Array<{ code: string; label: string }>;
   name: string;
+  onLocaleChange: (value: string) => void;
   showAddEntry: boolean;
   showFolderCreate: boolean;
   onFolderCreate: (entry: any) => void;
   onSearchChange: (value: string) => void;
+  selectedLocale: string;
+  showAllLocales: boolean;
 }) {
   const [searchInput, setSearchInput] = useState("");
+  const selectedLocaleLabel = selectedLocale === "all"
+    ? "All translations"
+    : localeOptions.find((locale) => locale.code === selectedLocale)?.label ?? selectedLocale;
 
   useEffect(() => {
     const timeout = setTimeout(() => onSearchChange(searchInput), 200);
@@ -117,6 +228,31 @@ const CollectionHeaderActions = memo(function CollectionHeaderActions({
   return (
     <div className="flex items-center gap-x-2">
       {actionNode}
+      {localeCodes.length > 0 && (
+        <Select value={selectedLocale} onValueChange={onLocaleChange}>
+          <SelectTrigger className="w-auto min-w-0 shrink-0">
+            <div className="flex items-center gap-2">
+              <Languages className="size-4" />
+              <SelectValue placeholder={selectedLocaleLabel} />
+            </div>
+          </SelectTrigger>
+          <SelectContent align="start">
+            <SelectGroup>
+              {localeOptions.map((locale) => (
+                <SelectItem key={locale.code} value={locale.code}>
+                  {locale.label}
+                </SelectItem>
+              ))}
+            </SelectGroup>
+            {showAllLocales && (
+              <>
+                <SelectSeparator />
+                <SelectItem value="all">All translations</SelectItem>
+              </>
+            )}
+          </SelectContent>
+        </Select>
+      )}
       <div className="relative hidden sm:block w-52 md:w-64">
         <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 opacity-50 pointer-events-none" />
         <Input
@@ -174,6 +310,8 @@ export function Collection({ name, path }: { name: string; path?: string }) {
   const [tableSearch, setTableSearch] = useState("");
   const [data, setData] = useState<Record<string, any>[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [persistedLocale, setPersistedLocale] = useState<string | null>(null);
+  const [localeHydrated, setLocaleHydrated] = useState(false);
   const { cache, mutate } = useSWRConfig();
 
   const searchParams = useSearchParams();
@@ -194,6 +332,50 @@ export function Collection({ name, path }: { name: string; path?: string }) {
   const canCreate = operations.create;
   const canRename = operations.rename;
   const canDelete = operations.delete;
+  const isLocalizedCollection = useMemo(
+    () => isLocalizedFilesSchema(schema),
+    [schema],
+  );
+  const localeCodes = useMemo(
+    () => isLocalizedCollection
+      ? getLocaleCodes(schema.localization, config.object?.localization)
+      : [],
+    [config.object, isLocalizedCollection, schema.localization],
+  );
+  const localeOptions = useMemo(
+    () => isLocalizedCollection
+      ? getLocaleOptions(schema.localization, config.object?.localization)
+      : [],
+    [config.object, isLocalizedCollection, schema.localization],
+  );
+  const defaultLocale = useMemo(
+    () => isLocalizedCollection
+      ? getDefaultLocale(schema.localization, config.object?.localization)
+      : undefined,
+    [config.object, isLocalizedCollection, schema.localization],
+  );
+  const showAllLocales = useMemo(
+    () => schema.localization?.locale?.type === "file",
+    [schema.localization?.locale?.type],
+  );
+  const requestedLocale = searchParams.get("locale");
+  const localeStorageKey = useMemo(
+    () => `collection-locale:${config.owner}/${config.repo}/${config.branch}/${name}`,
+    [config.branch, config.owner, config.repo, name],
+  );
+  const selectedLocale = useMemo(() => {
+    if (requestedLocale && localeCodes.includes(requestedLocale)) return requestedLocale;
+    if (showAllLocales && requestedLocale === "all") return "all";
+    if (persistedLocale && localeCodes.includes(persistedLocale)) return persistedLocale;
+    if (showAllLocales && persistedLocale === "all") return "all";
+    return defaultLocale ?? (showAllLocales ? "all" : null);
+  }, [defaultLocale, localeCodes, persistedLocale, requestedLocale, showAllLocales]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setPersistedLocale(window.localStorage.getItem(localeStorageKey));
+    setLocaleHydrated(true);
+  }, [localeStorageKey]);
 
   const viewFields = useMemo(() => {
     let pathAndFieldArray: any[] = [];
@@ -242,8 +424,23 @@ export function Collection({ name, path }: { name: string; path?: string }) {
       });
     }
 
+    if (
+      localeOptions.length > 0 &&
+      !pathAndFieldArray.find((item: any) => item.path === "locale") &&
+      ((schema.view?.fields && schema.view.fields.includes("locale")) || !schema.view?.fields)
+    ) {
+      pathAndFieldArray.push({
+        path: "locale",
+        field: {
+          label: "Locale",
+          name: "locale",
+          type: "string",
+        },
+      });
+    }
+
     return pathAndFieldArray;
-  }, [schema]);
+  }, [localeOptions.length, schema]);
 
   const primaryField = useMemo(
     () => getPrimaryField(schema) ?? "name",
@@ -263,15 +460,131 @@ export function Collection({ name, path }: { name: string; path?: string }) {
     setTableSearch(value);
   }, []);
 
+  const localizedRootPath = useMemo(
+    () =>
+      selectedLocale && selectedLocale !== "all"
+        ? getLocalizedRootPath(schema, selectedLocale, config.object?.localization)
+        : normalizePath(schema.path),
+    [config.object?.localization, schema, selectedLocale],
+  );
+
+  const collectionPath = useMemo(() => {
+    const requestedPath = normalizePath(path || "");
+    if (schema.view?.layout === "tree") return localizedRootPath;
+    if (!requestedPath) return localizedRootPath;
+
+    if (
+      selectedLocale &&
+      selectedLocale !== "all" &&
+      schema.localization?.locale?.type === "folder"
+    ) {
+      if (
+        isPathWithinLocalizedRoot(
+          requestedPath,
+          selectedLocale,
+          schema,
+          config.object?.localization,
+        )
+      ) {
+        return requestedPath;
+      }
+
+      return resolveLocalizedSiblingPath(
+        requestedPath,
+        selectedLocale,
+        schema,
+        config.object?.localization,
+      );
+    }
+
+    return requestedPath;
+  }, [
+    config.object?.localization,
+    localizedRootPath,
+    path,
+    schema,
+    schema.view?.layout,
+    selectedLocale,
+  ]);
+
+  const buildCollectionUrl = useCallback(
+    (nextPath?: string, nextLocale?: string | null) => {
+      const params = new URLSearchParams(Array.from(searchParams.entries()));
+      const effectiveLocale = nextLocale === undefined ? selectedLocale : nextLocale;
+
+      if (effectiveLocale && effectiveLocale !== "all") {
+        params.set("locale", effectiveLocale);
+      } else {
+        params.delete("locale");
+      }
+
+      const targetRootPath =
+        effectiveLocale && effectiveLocale !== "all"
+          ? getLocalizedRootPath(schema, effectiveLocale, config.object?.localization)
+          : normalizePath(schema.path);
+      const normalizedNextPath = normalizePath(nextPath || "");
+
+      if (normalizedNextPath && normalizedNextPath !== targetRootPath) {
+        params.set("path", normalizedNextPath);
+      } else {
+        params.delete("path");
+      }
+
+      const query = params.toString();
+      return query ? `${pathname}?${query}` : pathname;
+    },
+    [
+      config.object?.localization,
+      pathname,
+      schema,
+      searchParams,
+      selectedLocale,
+    ],
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !localeHydrated || !selectedLocale) return;
+    window.localStorage.setItem(localeStorageKey, selectedLocale);
+  }, [localeHydrated, localeStorageKey, selectedLocale]);
+
+  useEffect(() => {
+    if (!localeHydrated || !selectedLocale) return;
+    const hasValidRequestedLocale =
+      (requestedLocale != null && localeCodes.includes(requestedLocale)) ||
+      (requestedLocale === "all" && showAllLocales);
+    if (hasValidRequestedLocale) return;
+
+    const canonicalUrl = buildCollectionUrl(collectionPath, selectedLocale);
+    const currentQuery = searchParams.toString();
+    const canonicalQuery = canonicalUrl.split("?")[1] ?? "";
+    if (canonicalQuery === currentQuery) return;
+    router.replace(canonicalUrl);
+  }, [
+    buildCollectionUrl,
+    collectionPath,
+    localeCodes,
+    localeHydrated,
+    requestedLocale,
+    router,
+    searchParams,
+    selectedLocale,
+    showAllLocales,
+  ]);
+
   const buildCollectionApiUrl = useCallback(
     (fetchPath: string): string => {
       const params = new URLSearchParams({
-        path: fetchPath,
         fields: requestedFieldPaths.join(","),
       });
+      if (fetchPath) {
+        params.set("path", fetchPath);
+      }
+      if (selectedLocale && selectedLocale !== "all") {
+        params.set("locale", selectedLocale);
+      }
       return `/api/${config.owner}/${config.repo}/${encodeURIComponent(config.branch)}/collections/${encodeURIComponent(name)}?${params.toString()}`;
     },
-    [config.branch, config.owner, config.repo, name, requestedFieldPaths],
+    [config.branch, config.owner, config.repo, name, requestedFieldPaths, selectedLocale],
   );
 
   const fetchCollectionByUrl = useCallback(
@@ -296,8 +609,6 @@ export function Collection({ name, path }: { name: string; path?: string }) {
     [schema.view?.foldersFirst],
   );
 
-  const collectionPath =
-    schema.view?.layout === "tree" ? schema.path : path || schema.path;
   const rootCollectionKey = useMemo(
     () => buildCollectionApiUrl(collectionPath),
     [buildCollectionApiUrl, collectionPath],
@@ -345,7 +656,7 @@ export function Collection({ name, path }: { name: string; path?: string }) {
         return rows;
       } catch (err: any) {
         console.error(`Fetch failed for path ${fetchPath}:`, err);
-        if (fetchPath === (path || schema.path)) {
+        if (fetchPath === collectionPath) {
           setError(err.message);
         } else {
           toast.error(
@@ -358,10 +669,9 @@ export function Collection({ name, path }: { name: string; path?: string }) {
     [
       buildCollectionApiUrl,
       cache,
+      collectionPath,
       fetchCollectionByUrl,
       mutate,
-      path,
-      schema.path,
     ],
   );
 
@@ -473,9 +783,7 @@ export function Collection({ name, path }: { name: string; path?: string }) {
         toast.promise(renamePromise, {
           loading: `Renaming "${path}" to "${newPath}"`,
           success: (data: any) => {
-            router.push(
-              `/${config.owner}/${config.repo}/${encodeURIComponent(config.branch)}/collection/${encodeURIComponent(name)}/new?parent=${encodeURIComponent(getParentPath(normalizedNewPath))}`,
-            );
+            router.push(buildCollectionUrl(getParentPath(normalizedNewPath)));
             return data.message;
           },
           error: (error: any) => error.message,
@@ -484,7 +792,29 @@ export function Collection({ name, path }: { name: string; path?: string }) {
         console.error(error);
       }
     },
-    [config.owner, config.repo, config.branch, name, router],
+    [buildCollectionUrl, config.owner, config.repo, config.branch, name, router],
+  );
+
+  const buildNewEntryHref = useCallback(
+    (parentPath?: string) => {
+      const params = new URLSearchParams();
+      if (selectedLocale && selectedLocale !== "all") {
+        params.set("locale", selectedLocale);
+      }
+      if (parentPath && normalizePath(parentPath) !== localizedRootPath) {
+        params.set("parent", parentPath);
+      }
+      const query = params.toString();
+      return `/${config.owner}/${config.repo}/${encodeURIComponent(config.branch)}/collection/${encodeURIComponent(name)}/new${query ? `?${query}` : ""}`;
+    },
+    [
+      config.branch,
+      config.owner,
+      config.repo,
+      localizedRootPath,
+      name,
+      selectedLocale,
+    ],
   );
 
   const columns = useMemo(() => {
@@ -500,7 +830,9 @@ export function Collection({ name, path }: { name: string; path?: string }) {
             id: path,
             accessorKey: path,
             accessorFn: (originalRow: any) =>
-              safeAccess(originalRow.fields, path),
+              path === "locale"
+                ? originalRow.localization?.locale
+                : safeAccess(originalRow.fields, path),
             header: field?.label ?? field.name,
             meta: {
               className:
@@ -510,6 +842,16 @@ export function Collection({ name, path }: { name: string; path?: string }) {
             },
             cell: ({ cell, row }: { cell: any; row: any }) => {
               const cellValue = cell.getValue();
+              if (path === "locale") {
+                if (!cellValue) return null;
+                const localeLabel = localeOptions.find((locale) => locale.code === cellValue)?.label ?? cellValue;
+                return (
+                  <Badge variant="secondary" className="shrink-0">
+                    <Languages className="size-3.5" />
+                    {localeLabel}
+                  </Badge>
+                );
+              }
               const FieldComponent = viewComponents?.[field.type];
               const CellView = FieldComponent ? (
                 <FieldComponent value={cellValue} field={field} />
@@ -520,12 +862,14 @@ export function Collection({ name, path }: { name: string; path?: string }) {
               );
               if (path === primaryField) {
                 return (
-                  <Link
-                    className="font-medium truncate"
-                    href={`/${config.owner}/${config.repo}/${encodeURIComponent(config.branch)}/collection/${encodeURIComponent(name)}/edit/${encodeURIComponent(row.original.path)}`}
-                  >
-                    {CellView}
-                  </Link>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Link
+                      className="font-medium truncate"
+                      href={`/${config.owner}/${config.repo}/${encodeURIComponent(config.branch)}/collection/${encodeURIComponent(name)}/edit/${encodeURIComponent(row.original.path)}`}
+                    >
+                      {CellView}
+                    </Link>
+                  </div>
                 );
               }
               return (
@@ -539,9 +883,21 @@ export function Collection({ name, path }: { name: string; path?: string }) {
 
     tableColumns.push({
       accessorKey: "actions",
-      header: "Actions",
+      header: "",
       cell: ({ row }: { row: any }) => (
         <div className="flex gap-1 justify-end">
+          {row.original.type === "file" && row.original.localization?.siblings && row.original.localization?.locale && (
+            <CollectionRowTranslationMenu
+              branch={config.branch}
+              currentLocale={row.original.localization.locale}
+              localeOptions={localeOptions}
+              name={name}
+              owner={config.owner}
+              path={row.original.path}
+              repo={config.repo}
+              siblings={row.original.localization.siblings}
+            />
+          )}
           {row.original.type === "file" && (
             <ButtonGroup>
               <Link
@@ -634,10 +990,10 @@ export function Collection({ name, path }: { name: string; path?: string }) {
                     )}
                     href={
                       row.original.isNode
-                        ? `/${config.owner}/${config.repo}/${encodeURIComponent(config.branch)}/collection/${encodeURIComponent(name)}/new?parent=${encodeURIComponent(row.original.parentPath)}`
+                        ? buildNewEntryHref(row.original.parentPath)
                         : row.original.type === "dir"
-                          ? `/${config.owner}/${config.repo}/${encodeURIComponent(config.branch)}/collection/${encodeURIComponent(name)}/new?parent=${encodeURIComponent(row.original.path)}`
-                          : `/${config.owner}/${config.repo}/${encodeURIComponent(config.branch)}/collection/${encodeURIComponent(name)}/new?parent=${encodeURIComponent(row.original.path)}`
+                          ? buildNewEntryHref(row.original.path)
+                          : buildNewEntryHref(row.original.path)
                     }
                   >
                     <Plus className="size-4" />
@@ -669,7 +1025,36 @@ export function Collection({ name, path }: { name: string; path?: string }) {
     canCreate,
     canDelete,
     canRename,
+    buildNewEntryHref,
+    localeOptions,
   ]);
+
+  const filteredData = useMemo(() => {
+    if (selectedLocale == null || selectedLocale === "all") return data;
+
+    const localeSet = new Set(localeCodes);
+    const filterRows = (rows: Record<string, any>[]): Record<string, any>[] =>
+      rows
+        .filter((item) => {
+          if (item.type === "file") {
+            return item.localization?.locale === selectedLocale;
+          }
+
+          if (
+            item.type === "dir" &&
+            schema.localization?.scheme === "files" &&
+            schema.localization?.locale?.type === "folder"
+          ) {
+            const isLocaleDir = localeSet.has(item.name);
+            return !isLocaleDir || item.name === selectedLocale;
+          }
+
+          return true;
+        })
+        .map((item) => item.subRows ? { ...item, subRows: filterRows(item.subRows) } : item);
+
+    return filterRows(data);
+  }, [data, localeCodes, schema.localization, selectedLocale]);
 
   const initialState = useMemo(() => {
     const sortId =
@@ -700,11 +1085,31 @@ export function Collection({ name, path }: { name: string; path?: string }) {
 
   const handleNavigate = useCallback(
     (newPath: string) => {
-      const params = new URLSearchParams(Array.from(searchParams.entries()));
-      params.set("path", newPath || schema.path);
-      router.push(`${pathname}?${params.toString()}`);
+      router.push(buildCollectionUrl(newPath));
     },
-    [pathname, router, schema.path, searchParams],
+    [buildCollectionUrl, router],
+  );
+
+  const handleLocaleChange = useCallback(
+    (nextLocale: string) => {
+      const relativePath = getRelativePath(collectionPath, localizedRootPath);
+      const nextRootPath =
+        nextLocale !== "all"
+          ? getLocalizedRootPath(schema, nextLocale, config.object?.localization)
+          : normalizePath(schema.path);
+      const nextPath = relativePath
+        ? joinPathSegments([nextRootPath, relativePath])
+        : nextRootPath;
+      router.push(buildCollectionUrl(nextPath, nextLocale));
+    },
+    [
+      buildCollectionUrl,
+      collectionPath,
+      config.object?.localization,
+      localizedRootPath,
+      router,
+      schema,
+    ],
   );
 
   const handleExpand = useCallback(
@@ -796,17 +1201,19 @@ export function Collection({ name, path }: { name: string; path?: string }) {
     [schema.view?.layout],
   );
 
-  const addEntryHref = `/${config.owner}/${config.repo}/${encodeURIComponent(config.branch)}/collection/${encodeURIComponent(name)}/new${
-    schema.view?.layout !== "tree" && path && path !== schema.path
-      ? `?parent=${encodeURIComponent(path)}`
-      : ""
-  }`;
+  const addEntryHref = useMemo(
+    () =>
+      schema.view?.layout !== "tree"
+        ? buildNewEntryHref(collectionPath)
+        : buildNewEntryHref(),
+    [buildNewEntryHref, collectionPath, schema.view?.layout],
+  );
 
   const breadcrumbNode = useMemo(() => {
     const groupTrail: GroupTrailItem[] = Array.isArray(schema.groupTrail)
       ? schema.groupTrail
       : [];
-    const normalizedRootPath = normalizePath(schema.path);
+    const normalizedRootPath = normalizePath(localizedRootPath);
     const normalizedCurrentPath = normalizePath(collectionPath);
     const relativePath = getRelativePath(
       normalizedCurrentPath,
@@ -847,7 +1254,7 @@ export function Collection({ name, path }: { name: string; path?: string }) {
             {entries.length > 0 ? (
               <BreadcrumbLink
                 className="cursor-pointer"
-                onClick={() => handleNavigate(schema.path)}
+                onClick={() => handleNavigate(localizedRootPath)}
               >
                 {schema.label || schema.name}
               </BreadcrumbLink>
@@ -917,7 +1324,7 @@ export function Collection({ name, path }: { name: string; path?: string }) {
     schema.groupTrail,
     schema.label,
     schema.name,
-    schema.path,
+    localizedRootPath,
   ]);
 
   const headerNode = useMemo(
@@ -938,18 +1345,23 @@ export function Collection({ name, path }: { name: string; path?: string }) {
                 contextPath={collectionPath}
                 contextData={{
                   label: schema.label || schema.name,
-                  rootPath: schema.path,
+                  rootPath: localizedRootPath,
                   format: schema.format ?? null,
                 }}
               />
             ) : undefined
           }
           collectionPath={collectionPath}
+          localeCodes={localeCodes}
+          localeOptions={localeOptions}
           name={name}
+          onLocaleChange={handleLocaleChange}
           showAddEntry={canCreate}
           showFolderCreate={schema.subfolders !== false && canCreate}
           onFolderCreate={handleFolderCreate}
           onSearchChange={handleTableSearchChange}
+          selectedLocale={selectedLocale ?? "all"}
+          showAllLocales={showAllLocales}
         />
       </div>
     ),
@@ -962,14 +1374,19 @@ export function Collection({ name, path }: { name: string; path?: string }) {
       config.owner,
       config.repo,
       handleFolderCreate,
+      handleLocaleChange,
       handleTableSearchChange,
       canCreate,
+      localeCodes,
+      localeOptions,
       name,
+      selectedLocale,
       schema.format,
       schema.label,
       schema.name,
-      schema.path,
       schema.subfolders,
+      showAllLocales,
+      localizedRootPath,
     ],
   );
 
@@ -993,7 +1410,7 @@ export function Collection({ name, path }: { name: string; path?: string }) {
           </EmptyTitle>
           <EmptyDescription>
             {error === "Not found"
-              ? `The collection folder "${schema.path}" does not exist yet.`
+              ? `The collection folder "${localizedRootPath}" does not exist yet.`
               : error}
           </EmptyDescription>
         </EmptyHeader>
@@ -1018,13 +1435,13 @@ export function Collection({ name, path }: { name: string; path?: string }) {
   ) : (
     <CollectionTable
       columns={columns}
-      data={data}
+      data={filteredData}
       search={tableSearch}
       setSearch={setTableSearch}
       initialState={initialState}
       onExpand={handleExpand}
-      pathname={pathname}
-      path={path || schema.path}
+      getFolderHref={buildCollectionUrl}
+      path={collectionPath}
       isTree={schema.view?.layout === "tree"}
       primaryField={primaryField}
     />

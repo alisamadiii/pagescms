@@ -323,6 +323,94 @@ const ContentOperationsSchema = z
   })
   .strict();
 
+const LocaleEntrySchema = z.union([
+  z
+    .string({
+      message: "Locale entries must be strings or objects.",
+    })
+    .min(1, {
+      message: "Locale codes cannot be empty.",
+    }),
+  z
+    .object({
+      code: z
+        .string({
+          required_error: "'code' is required.",
+          invalid_type_error: "'code' must be a string.",
+        })
+        .min(1, {
+          message: "'code' cannot be empty.",
+        }),
+      label: z.string().optional(),
+      fallback: z
+        .array(z.string().min(1), {
+          message: "'fallback' must be an array of locale codes.",
+        })
+        .optional(),
+    })
+    .strict(),
+]);
+
+const RootLocalizationSchema = z
+  .object({
+    default: z
+      .string()
+      .min(1, {
+        message: "'default' cannot be empty.",
+      })
+      .optional(),
+    locales: z
+      .array(LocaleEntrySchema, {
+        message: "'locales' must be an array of locale codes or locale objects.",
+      })
+      .min(1, {
+        message: "'locales' must contain at least one locale.",
+      }),
+  })
+  .strict();
+
+const FileLocalePlacementSchema = z
+  .object({
+    type: z.literal("file"),
+    position: z.enum(["prefix", "suffix"], {
+      message: "'position' must be either 'prefix' or 'suffix'.",
+    }),
+    separator: z.string().min(1, {
+      message: "'separator' cannot be empty.",
+    }),
+  })
+  .strict();
+
+const FolderLocalePlacementSchema = z
+  .object({
+    type: z.literal("folder"),
+    position: z.enum(["root", "collection", "relative", "custom"], {
+      message:
+        "'position' must be 'root', 'collection', 'relative', or 'custom'.",
+    }),
+    default: z.enum(["omit", "explicit"], {
+      message: "'default' must be either 'omit' or 'explicit'.",
+    }).optional(),
+    root: z.string().min(1, {
+      message: "'root' cannot be empty.",
+    }).optional(),
+  })
+  .strict();
+
+const ContentLocalizationSchema = z
+  .object({
+    scheme: z.enum(["files", "fields"], {
+      message: "'scheme' must be either 'files' or 'fields'.",
+    }).optional(),
+    locales: z.array(LocaleEntrySchema, {
+      message: "'locales' must be an array of locale codes or locale objects.",
+    }).optional(),
+    locale: z.union([FileLocalePlacementSchema, FolderLocalePlacementSchema], {
+      message: "'locale' must define a valid file or folder locale placement.",
+    }).optional(),
+  })
+  .strict();
+
 // Generator for Field Object Schema (components do not have a `name` field)
 const generateFieldObjectSchema = (
   isComponent?: boolean,
@@ -404,6 +492,12 @@ const generateFieldObjectSchema = (
         required: z
           .boolean({
             message: "'required' must be a boolean.",
+          })
+          .optional()
+          .nullable(),
+        localized: z
+          .boolean({
+            message: "'localized' must be a boolean.",
           })
           .optional()
           .nullable(),
@@ -726,6 +820,7 @@ const ContentLeafSchema = z
         message: "'actions' must be an array of action definitions.",
       })
       .optional(),
+    localization: ContentLocalizationSchema.optional(),
   })
   .strict();
 
@@ -769,6 +864,7 @@ const ConfigSchema = z
         message: "'hide' must be a boolean.",
       })
       .optional(),
+    localization: RootLocalizationSchema.optional(),
     media: MediaSchema.optional(),
     content: z
       .array(ContentObjectSchema, {
@@ -824,6 +920,7 @@ const ConfigSchema = z
                   },
                 )
                 .optional(),
+              localization: RootLocalizationSchema.optional(),
               commit: z
                 .object(
                   {
@@ -850,6 +947,20 @@ const ConfigSchema = z
   })
   .strict()
   .superRefine((data, ctx) => {
+    const settingsObject =
+      data?.settings && typeof data.settings === "object"
+        ? data.settings
+        : undefined;
+    const rootLocalization = settingsObject?.localization ?? data?.localization;
+    const rootLocales = Array.isArray(rootLocalization?.locales)
+      ? rootLocalization.locales
+        .map((locale: any) => typeof locale === "string" ? locale : locale?.code)
+        .filter(Boolean)
+      : [];
+    const rootDefault = typeof rootLocalization?.default === "string"
+      ? rootLocalization.default
+      : rootLocales[0];
+
     const validateContentItem = (item: any, path: (string | number)[]) => {
       if (!item || typeof item !== "object") return;
 
@@ -860,6 +971,82 @@ const ConfigSchema = z
           );
         }
         return;
+      }
+
+      const localization = item.localization;
+      const effectiveScheme = localization?.scheme ?? (localization ? "files" : undefined);
+      const contentLocales = Array.isArray(localization?.locales)
+        ? localization.locales
+          .map((locale: any) => typeof locale === "string" ? locale : locale?.code)
+          .filter(Boolean)
+        : [];
+
+      if (localization) {
+        if (contentLocales.length > 0 && rootLocales.length > 0) {
+          contentLocales.forEach((localeCode: string, localeIndex: number) => {
+            if (!rootLocales.includes(localeCode)) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `Locale '${localeCode}' must be defined in root localization.locales.`,
+                path: [...path, "localization", "locales", localeIndex],
+              });
+            }
+          });
+        }
+
+        if (
+          rootDefault &&
+          contentLocales.length > 0 &&
+          !contentLocales.includes(rootDefault)
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              `Content localization must include the default locale '${rootDefault}'.`,
+            path: [...path, "localization", "locales"],
+          });
+        }
+
+        if (effectiveScheme === "fields" && localization.locale != null) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Field-based localization cannot define a 'locale' placement.",
+            path: [...path, "localization", "locale"],
+          });
+        }
+
+        if (effectiveScheme === "files" && localization.locale == null) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "File-based localization must define a 'locale' placement.",
+            path: [...path, "localization", "locale"],
+          });
+        }
+
+        if (localization.locale?.type === "folder") {
+          if (
+            localization.locale.position === "custom" &&
+            typeof localization.locale.root !== "string"
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message:
+                "Folder locale placement with position 'custom' requires a 'root'.",
+              path: [...path, "localization", "locale", "root"],
+            });
+          }
+
+          if (
+            localization.locale.position !== "custom" &&
+            localization.locale.root != null
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: "'root' is only valid when locale.position is 'custom'.",
+              path: [...path, "localization", "locale", "root"],
+            });
+          }
+        }
       }
 
       const actions = Array.isArray(item.actions) ? item.actions : [];
@@ -884,6 +1071,68 @@ const ConfigSchema = z
     };
 
     const content = data?.content;
+    if (rootLocales.length > 0) {
+      const duplicateLocales = rootLocales.filter((locale: string, index: number) =>
+        rootLocales.indexOf(locale) !== index);
+      duplicateLocales.forEach((locale: string) => {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate locale '${locale}' is not allowed.`,
+          path: ["localization", "locales"],
+        });
+      });
+
+      if (rootDefault && !rootLocales.includes(rootDefault)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            `Default locale '${rootDefault}' must be one of localization.locales.`,
+          path: ["localization", "default"],
+        });
+      }
+
+      const fallbackMap = new Map<string, string[]>();
+      (rootLocalization?.locales || []).forEach((locale: any, index: number) => {
+        const code = typeof locale === "string" ? locale : locale?.code;
+        const fallback = Array.isArray(locale?.fallback) ? locale.fallback : [];
+        if (!code) return;
+        fallbackMap.set(code, fallback);
+
+        fallback.forEach((fallbackCode: string, fallbackIndex: number) => {
+          if (!rootLocales.includes(fallbackCode)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `Fallback locale '${fallbackCode}' must be defined in localization.locales.`,
+              path: ["localization", "locales", index, "fallback", fallbackIndex],
+            });
+          }
+        });
+      });
+
+      const visiting = new Set<string>();
+      const visited = new Set<string>();
+      const hasCycle = (locale: string): boolean => {
+        if (visiting.has(locale)) return true;
+        if (visited.has(locale)) return false;
+        visiting.add(locale);
+        const nextLocales = fallbackMap.get(locale) || [];
+        for (const next of nextLocales) {
+          if (hasCycle(next)) return true;
+        }
+        visiting.delete(locale);
+        visited.add(locale);
+        return false;
+      };
+
+      if (rootLocales.some((locale: string) => hasCycle(locale))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Localization fallback chains cannot contain cycles.",
+          path: ["localization", "locales"],
+        });
+      }
+    }
+
     if (!Array.isArray(content)) return;
     content.forEach((item, index) => validateContentItem(item, ["content", index]));
   })

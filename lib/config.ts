@@ -19,6 +19,17 @@ type NavigationNode = {
   items?: NavigationNode[];
 };
 
+type NormalizedLocale = {
+  code: string;
+  label: string;
+  fallback: string[];
+};
+
+type NormalizedRootLocalization = {
+  default: string;
+  locales: NormalizedLocale[];
+};
+
 const resolveSettingsObject = (configObject?: Record<string, any>) => {
   if (!configObject || typeof configObject !== "object") return {};
   return (configObject.settings && typeof configObject.settings === "object")
@@ -40,6 +51,94 @@ const isCacheEnabled = (configObject?: Record<string, any>) => {
   if (typeof settings.cache === "boolean") return settings.cache;
   if (typeof (configObject as any)?.cache === "boolean") return Boolean((configObject as any).cache);
   return false;
+};
+
+const normalizeRootLocalization = (
+  localization?: Record<string, any>,
+): NormalizedRootLocalization | undefined => {
+  if (!localization || typeof localization !== "object") return undefined;
+  if (!Array.isArray(localization.locales) || localization.locales.length === 0) {
+    return undefined;
+  }
+
+  const localeEntries = localization.locales
+    .map((locale: any) =>
+      typeof locale === "string"
+        ? { code: locale, label: locale }
+        : {
+          code: locale?.code,
+          label: locale?.label ?? locale?.code,
+          fallback: Array.isArray(locale?.fallback) ? locale.fallback : undefined,
+        })
+    .filter((locale: any) => typeof locale?.code === "string" && locale.code.length > 0);
+
+  if (localeEntries.length === 0) return undefined;
+
+  const defaultLocale = typeof localization.default === "string" && localization.default.length > 0
+    ? localization.default
+    : localeEntries[0].code;
+
+  return {
+    default: defaultLocale,
+    locales: localeEntries.map((locale: any) => ({
+      code: locale.code,
+      label: locale.label ?? locale.code,
+      fallback: Array.isArray(locale.fallback)
+        ? locale.fallback
+        : locale.code === defaultLocale
+          ? []
+          : [defaultLocale],
+    })),
+  };
+};
+
+const normalizeContentLocalization = (
+  localization: any,
+  rootLocalization?: NormalizedRootLocalization,
+) => {
+  if (!localization || typeof localization !== "object") return localization;
+
+  const normalized = JSON.parse(JSON.stringify(localization));
+  if (normalized.scheme == null) normalized.scheme = "files";
+
+  if (Array.isArray(normalized.locales)) {
+    normalized.locales = normalized.locales
+      .map((locale: any) =>
+        typeof locale === "string"
+          ? {
+            code: locale,
+            label: locale,
+          }
+          : {
+            code: locale?.code,
+            label: locale?.label ?? locale?.code,
+            fallback: Array.isArray(locale?.fallback) ? locale.fallback : undefined,
+          })
+      .filter((locale: any) => typeof locale?.code === "string" && locale.code.length > 0)
+      .map((locale: any) => {
+        const rootLocale = rootLocalization?.locales.find(
+          (rootEntry) => rootEntry.code === locale.code,
+        );
+        const fallback = Array.isArray(locale.fallback)
+          ? locale.fallback
+          : rootLocale?.fallback ?? (
+            rootLocalization?.default && locale.code !== rootLocalization.default
+              ? [rootLocalization.default]
+              : []
+          );
+        return {
+          code: locale.code,
+          label: locale.label ?? rootLocale?.label ?? locale.code,
+          fallback,
+        };
+      });
+  }
+
+  if (normalized.locale?.type === "folder" && normalized.locale.default == null) {
+    normalized.locale.default = "omit";
+  }
+
+  return normalized;
 };
 
 // Parse the config file (YAML to JSON)
@@ -92,6 +191,18 @@ const normalizeConfig = (configObject: any) => {
   }
   delete configObjectCopy.cache;
   delete configObjectCopy.hide;
+
+  const rawLocalization =
+    (configObjectCopy.settings && typeof configObjectCopy.settings === "object"
+      ? configObjectCopy.settings.localization
+      : undefined) ?? configObjectCopy.localization;
+  if (rawLocalization && typeof rawLocalization === "object") {
+    const normalizedLocalization = normalizeRootLocalization(rawLocalization);
+    if (normalizedLocalization) {
+      configObjectCopy.settings.localization = normalizedLocalization;
+      configObjectCopy.localization = normalizedLocalization;
+    }
+  }
 
   // Resolve component references in `components`
   if (
@@ -189,6 +300,7 @@ const normalizeConfig = (configObject: any) => {
     const normalizedContent = normalizeContentEntries(
       configObjectCopy.content,
       configObjectCopy?.components,
+      configObjectCopy?.localization,
     );
     configObjectCopy.content = normalizedContent.items;
     navigation.content = normalizedContent.navigation;
@@ -246,6 +358,7 @@ const normalizeConfig = (configObject: any) => {
 const normalizeContentEntry = (
   item: any,
   componentsMap: Record<string, any>,
+  rootLocalization?: NormalizedRootLocalization,
 ) => {
   if (item.path != null) {
     item.path = item.path.replace(/^\/|\/$/g, "");
@@ -335,6 +448,10 @@ const normalizeContentEntry = (
     delete item.commit.message;
   }
 
+  if (item.localization && typeof item.localization === "object") {
+    item.localization = normalizeContentLocalization(item.localization, rootLocalization);
+  }
+
   if (Array.isArray(item.fields)) {
     item.fields = item.fields.map((field: any) => {
       return resolveComponent(field, componentsMap);
@@ -347,6 +464,7 @@ const normalizeContentEntry = (
 const normalizeContentEntries = (
   entries: any[],
   componentsMap: Record<string, any>,
+  rootLocalization?: NormalizedRootLocalization,
 ): { items: any[]; navigation: NavigationNode[] } => {
   const items: any[] = [];
   const navigation: NavigationNode[] = [];
@@ -356,6 +474,7 @@ const normalizeContentEntries = (
       const normalizedGroup = normalizeContentEntries(
         entry.items || [],
         componentsMap,
+        rootLocalization,
       );
       navigation.push({
         type: "group",
@@ -367,7 +486,11 @@ const normalizeContentEntries = (
       return;
     }
 
-    const normalizedEntry = normalizeContentEntry(entry, componentsMap);
+    const normalizedEntry = normalizeContentEntry(
+      entry,
+      componentsMap,
+      rootLocalization,
+    );
     items.push(normalizedEntry);
     navigation.push({
       type: normalizedEntry.type,
