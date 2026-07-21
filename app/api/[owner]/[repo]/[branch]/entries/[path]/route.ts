@@ -4,6 +4,7 @@ import { readFns } from "@/fields/registry";
 import { deepMap, getSchemaByName } from "@/lib/schema";
 import { parse } from "@/lib/serialization";
 import { getConfig } from "@/lib/config-store";
+import { getBasePath, resolveConfigFilePath } from "@/lib/repo-settings";
 import { getFileExtension, normalizePath } from "@/lib/utils/file";
 import { assertGithubIdentity } from "@/lib/authz-shared";
 import { getToken } from "@/lib/token";
@@ -84,13 +85,19 @@ export async function GET(
       config = {};
     }
     
+    // Settings live at `{basePath}/.pages.yml`; content paths are already
+    // physical (rebased via the config schema).
+    const readPath = normalizedPath === ".pages.yml"
+      ? resolveConfigFilePath(await getBasePath(params.owner, params.repo))
+      : normalizedPath;
+
     const octokit = createOctokitInstance(token);
     let response;
     try {
       response = await octokit.rest.repos.getContent({
         owner: params.owner,
         repo: params.repo,
-        path: normalizedPath,
+        path: readPath,
         ref: params.branch
       });
     } catch (error: any) {

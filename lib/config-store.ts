@@ -8,6 +8,7 @@ import { configTable } from "@/db/schema";
 import { and, eq, sql } from "drizzle-orm";
 import { createOctokitInstance } from "@/lib/utils/octokit";
 import { configVersion, normalizeConfig, parseConfig } from "@/lib/config";
+import { getBasePath, rebaseConfigObject, resolveConfigFilePath } from "@/lib/repo-settings";
 
 const getConfigFromDb = async (
   owner: string,
@@ -128,13 +129,14 @@ const fetchConfigFromGithub = async (
   repo: string,
   branch: string,
   token: string,
+  basePath: string,
 ): Promise<Pick<Config, "sha" | "object"> | null> => {
   const octokit = createOctokitInstance(token);
   try {
     const response = await octokit.rest.repos.getContent({
       owner,
       repo,
-      path: ".pages.yml",
+      path: resolveConfigFilePath(basePath),
       ref: branch,
       headers: { Accept: "application/vnd.github.v3+json" },
     });
@@ -148,7 +150,10 @@ const fetchConfigFromGithub = async (
 
     const configFile = Buffer.from(response.data.content, "base64").toString();
     const parsed = parseConfig(configFile);
-    const configObject = normalizeConfig(parsed.document.toJSON());
+    const configObject = rebaseConfigObject(
+      normalizeConfig(parsed.document.toJSON()),
+      basePath,
+    );
 
     return {
       sha: response.data.sha,
@@ -182,6 +187,7 @@ const getConfig = async (
   if (existing) return existing;
 
   const run = (async (): Promise<Config | null> => {
+    const basePath = await getBasePath(normalizedOwner, normalizedRepo);
     const cachedConfig = await getConfigFromDb(normalizedOwner, normalizedRepo, branch);
     if (!sync) {
       if (cachedConfig?.version === configVersion) return cachedConfig;
@@ -190,7 +196,7 @@ const getConfig = async (
       const token = await resolveToken();
       if (!token) throw new Error("Token not found");
 
-      const latest = await fetchConfigFromGithub(owner, repo, branch, token);
+      const latest = await fetchConfigFromGithub(owner, repo, branch, token, basePath);
       if (!latest) return null;
 
       const nextConfig: Config = {
@@ -226,7 +232,7 @@ const getConfig = async (
         try {
           const token = await requireToken();
           if (!token) return;
-          const latest = await fetchConfigFromGithub(owner, repo, branch, token);
+          const latest = await fetchConfigFromGithub(owner, repo, branch, token, basePath);
           if (!latest) {
             await db.delete(configTable).where(
               and(
@@ -261,7 +267,7 @@ const getConfig = async (
     const token = await requireToken();
     if (!token) throw new Error("Token not found");
 
-    const latest = await fetchConfigFromGithub(owner, repo, branch, token);
+    const latest = await fetchConfigFromGithub(owner, repo, branch, token, basePath);
     if (!latest) {
       if (cachedConfig) {
         await db.delete(configTable).where(

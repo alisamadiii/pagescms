@@ -6,6 +6,7 @@ import { configVersion, parseConfig, normalizeConfig } from "@/lib/config";
 import { stringify, parse } from "@/lib/serialization";
 import { deepMap, generateZodSchema, getSchemaByName, sanitizeObject } from "@/lib/schema";
 import { getConfig, updateConfig } from "@/lib/config-store";
+import { getBasePath, rebaseConfigObject, resolveConfigFilePath } from "@/lib/repo-settings";
 import { getFileExtension, getFileName, normalizePath, serializedTypes, getParentPath } from "@/lib/utils/file";
 import { assertGithubIdentity } from "@/lib/authz-shared";
 import { getToken } from "@/lib/token";
@@ -38,6 +39,7 @@ export async function POST(
     if (!token) throw new Error("Token not found");
 
     const normalizedPath = normalizePath(params.path);
+    const basePath = await getBasePath(params.owner, params.repo);
 
     const config = await getConfig(params.owner, params.repo, params.branch, {
       getToken: async () => token,
@@ -209,12 +211,18 @@ export async function POST(
         }
       : undefined;
     
+    // Settings live at `{basePath}/.pages.yml`; content/media paths are already
+    // physical (rebased via the config schema), so they write as-is.
+    const writePath = data.type === "settings"
+      ? resolveConfigFilePath(basePath)
+      : normalizedPath;
+
     const response = await githubSaveFile(
       token,
       params.owner,
       params.repo,
       params.branch,
-      normalizedPath,
+      writePath,
       contentBase64,
       data.sha,
       {
@@ -232,7 +240,10 @@ export async function POST(
     let newConfig;
     if (data.type === "settings") {
       const parsedConfig = parseConfig(data.content.body ?? "");
-      const configObject = normalizeConfig(parsedConfig.document.toJSON());
+      const configObject = rebaseConfigObject(
+        normalizeConfig(parsedConfig.document.toJSON()),
+        basePath,
+      );
       newConfig = {
         owner: params.owner,
         repo: params.repo,
@@ -269,7 +280,7 @@ export async function POST(
 
     return Response.json({
       status: "success",
-      message: savedPath !== normalizedPath
+      message: savedPath !== writePath
         ? `File "${normalizedPath}" saved successfully but renamed to "${savedPath}" to avoid naming conflict.`
         : `File "${normalizedPath}" saved successfully.`,
       data: {

@@ -69,6 +69,7 @@ import {
   LogOut,
   Moon,
   Settings,
+  SlidersHorizontal,
   Sun,
   Users,
 } from "lucide-react";
@@ -349,6 +350,15 @@ export function RepoSidebar() {
         label: "Collaborators",
         href: `/${config.owner}/${config.repo}/${encodeURIComponent(config.branch)}/collaborators`,
         icon: <Users className="size-4" />,
+      });
+    }
+
+    if (canManageRepo) {
+      items.push({
+        key: "admin-settings",
+        label: "Settings",
+        href: `/${config.owner}/${config.repo}/${encodeURIComponent(config.branch)}/settings`,
+        icon: <SlidersHorizontal className="size-4" />,
       });
     }
 

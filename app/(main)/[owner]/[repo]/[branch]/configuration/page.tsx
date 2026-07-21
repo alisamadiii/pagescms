@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { Entry } from "@/components/entry/entry";
+import { BasePath } from "@/components/settings/base-path";
 import {
   DocumentTitle,
   formatRepoBranchTitle,
@@ -27,6 +28,10 @@ export default function Page() {
   const { config, setConfig } = useConfig();
   const { user } = useUser();
 
+  // No sha means `.pages.yml` couldn't be loaded (missing or wrong base path).
+  // Surface the base path here so the user can fix it without leaving the page.
+  const isConfigMissing = !config?.sha;
+
   const handleSave = async (data: Record<string, any>) => {
     setConfig(data.config);
   };
@@ -45,7 +50,7 @@ export default function Page() {
   }
 
   return (
-    <>
+    <div className="flex h-full flex-col gap-6">
       {config && (
         <DocumentTitle
           title={formatRepoBranchTitle(
@@ -56,6 +61,10 @@ export default function Page() {
           )}
         />
       )}
+      {isConfigMissing && config?.owner && config?.repo && (
+        <BasePath owner={config.owner} repo={config.repo} />
+      )}
+      <div className="relative flex-1 min-h-0 overflow-y-auto">
       <Entry
         path=".pages.yml"
         onSave={handleSave}
@@ -83,6 +92,7 @@ export default function Page() {
           </Tooltip>
         }
       />
-    </>
+      </div>
+    </div>
   );
 }

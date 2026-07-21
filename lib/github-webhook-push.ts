@@ -7,6 +7,7 @@ import { clearFileCache, updateMultipleFilesCache } from "@/lib/github-cache-fil
 import { deleteCacheFileMeta, upsertCacheFileMeta } from "@/lib/github-cache-meta";
 import { clearScopedFileCache } from "@/lib/github-webhook-installation";
 import { getInstallationToken } from "@/lib/token";
+import { getBasePath, rebaseConfigObject, resolveConfigFilePath } from "@/lib/repo-settings";
 import { normalizePath } from "@/lib/utils/file";
 import { createOctokitInstance } from "@/lib/utils/octokit";
 
@@ -43,6 +44,10 @@ const handlePushWebhookEvent = async (event: string | null, data: any) => {
     return true;
   }
 
+  // Config and content live under `{basePath}` for monorepos; webhook paths from
+  // GitHub are physical (repo-root relative), so match against the physical path.
+  const basePath = await getBasePath(pushOwner, pushRepo);
+
   const commits = Array.isArray(data.commits) ? data.commits : [];
   const removedPathSet = new Set<string>();
   const modifiedPathSet = new Set<string>();
@@ -71,7 +76,7 @@ const handlePushWebhookEvent = async (event: string | null, data: any) => {
   ];
   const uniqueChangedPaths = Array.from(new Set(changedPaths));
   const changedCount = uniqueChangedPaths.length;
-  const configFilePath = ".pages.yml";
+  const configFilePath = resolveConfigFilePath(basePath);
   const configChanged = uniqueChangedPaths.includes(configFilePath);
   const configRemoved = removedFiles.some((file) => file.path === configFilePath);
 
@@ -186,7 +191,10 @@ const handlePushWebhookEvent = async (event: string | null, data: any) => {
   if (parsed.errors.length > 0) {
     throw new Error(`Failed to parse .pages.yml: ${parsed.errors[0]?.message || "Unknown parse error"}`);
   }
-  const configObject = normalizeConfig(parsed.document.toJSON());
+  const configObject = rebaseConfigObject(
+    normalizeConfig(parsed.document.toJSON()),
+    basePath,
+  );
 
   const existingConfig = await db.query.configTable.findFirst({
     where: and(

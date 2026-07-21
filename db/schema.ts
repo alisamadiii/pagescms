@@ -130,6 +130,20 @@ const configTable = pgTable("config", {
   idx_config_owner_repo_branch: uniqueIndex("idx_config_owner_repo_branch").on(table.owner, table.repo, table.branch)
 }));
 
+const repoSettingsTable = pgTable("repo_settings", {
+  id: serial("id").primaryKey(),
+  owner: text("owner").notNull(),
+  repo: text("repo").notNull(),
+  basePath: text("base_path").notNull().default(""),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, table => ({
+  uq_repo_settings_owner_repo_ci: uniqueIndex("uq_repo_settings_owner_repo_ci").on(
+    sql`lower(${table.owner})`,
+    sql`lower(${table.repo})`,
+  ),
+}));
+
 const cacheFileTable = pgTable("cache_file", {
   id: serial("id").primaryKey(),
   context: text("context").notNull().default('collection'),
@@ -218,6 +232,7 @@ export {
   collaboratorTable,
   collaboratorInviteTable,
   configTable,
+  repoSettingsTable,
   cacheFileTable,
   cacheFileMetaTable,
   cachePermissionTable,

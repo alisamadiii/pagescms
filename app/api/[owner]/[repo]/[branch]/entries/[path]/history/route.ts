@@ -2,6 +2,7 @@ import { type NextRequest } from "next/server";
 import { createOctokitInstance } from "@/lib/utils/octokit";
 import { getSchemaByName } from "@/lib/schema";
 import { getConfig } from "@/lib/config-store";
+import { getBasePath, resolveConfigFilePath } from "@/lib/repo-settings";
 import { getFileExtension, normalizePath } from "@/lib/utils/file";
 import { assertGithubIdentity } from "@/lib/authz-shared";
 import { getToken } from "@/lib/token";
@@ -56,11 +57,16 @@ export async function GET(
       throw createHttpError("If no content entry name is provided, the path must be \".pages.yml\".", 400);
     }
     
+    // Settings live at `{basePath}/.pages.yml`; content paths are already physical.
+    const historyPath = normalizedPath === ".pages.yml"
+      ? resolveConfigFilePath(await getBasePath(params.owner, params.repo))
+      : decodeURIComponent(normalizedPath);
+
     const octokit = createOctokitInstance(token);
     const response = await octokit.rest.repos.listCommits({
       owner: params.owner,
       repo: params.repo,
-      path: decodeURIComponent(normalizedPath),
+      path: historyPath,
       sha: params.branch,
     });
 
