@@ -63,7 +63,7 @@ const getToken = cache(async (
 const getInstallationToken = cache(async (owner: string, repo: string) => {
   const app = new App({
     appId: process.env.GITHUB_APP_ID!,
-    privateKey: process.env.GITHUB_APP_PRIVATE_KEY!,
+    privateKey: process.env.GITHUB_APP_PRIVATE_KEY!.replace(/\\n/g, "\n"),
   });
 
   const repoInstallation = await app.octokit.request(
