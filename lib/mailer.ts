@@ -1,7 +1,7 @@
 import { Resend } from "resend";
 import nodemailer from "nodemailer";
 
-type MailProvider = "resend" | "smtp";
+type MailProvider = "resend" | "smtp" | "agency";
 
 type SendEmailInput = {
   to: string | string[];
@@ -47,15 +47,16 @@ const getFromEmail = () => {
 const getEmailProvider = (): MailProvider => {
   const configured = getEnv("EMAIL_PROVIDER")?.toLowerCase();
   if (configured) {
-    if (configured === "resend" || configured === "smtp") return configured;
-    throw new Error(`Unsupported EMAIL_PROVIDER "${configured}". Use "resend" or "smtp".`);
+    if (configured === "resend" || configured === "smtp" || configured === "agency") return configured;
+    throw new Error(`Unsupported EMAIL_PROVIDER "${configured}". Use "resend", "smtp", or "agency".`);
   }
 
   if (getEnv("RESEND_API_KEY")) return "resend";
   if (getEnv("SMTP_HOST")) return "smtp";
+  if (getEnv("AGENCY_API_KEY")) return "agency";
 
   throw new Error(
-    "No email provider configured. Set EMAIL_PROVIDER=resend|smtp, or define RESEND_API_KEY / SMTP_HOST.",
+    "No email provider configured. Set EMAIL_PROVIDER=resend|smtp|agency, or define RESEND_API_KEY / SMTP_HOST / AGENCY_API_KEY.",
   );
 };
 
@@ -110,6 +111,24 @@ export const sendEmail = async ({ to, subject, html, text }: SendEmailInput) => 
     });
 
     if (error) throw new Error(error.message);
+    return;
+  }
+
+  if (provider === "agency") {
+    const apiKey = getEnv("AGENCY_API_KEY");
+    if (!apiKey) throw new Error("Missing AGENCY_API_KEY for agency provider.");
+
+    const { AgencyClient } = await import("@alisamadiillc/agency-api");
+    const agency = new AgencyClient(apiKey);
+    const { error } = await agency.emails.send({
+      from,
+      to: recipients,
+      subject,
+      html,
+      text,
+    });
+
+    if (error) throw new Error(`${error.code}: ${error.message}`);
     return;
   }
 
